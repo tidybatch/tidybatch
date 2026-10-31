@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
@@ -121,9 +121,10 @@ def render_name(template: str, path: Path, index: int, stem: str | None = None) 
 
 
 def _key(p: Path) -> str:
-    # Case-insensitive on purpose: Windows and macOS file systems treat
-    # 'A.txt' and 'a.txt' as the same file, so we must too.
-    return str(p).casefold()
+    # Case- and normalization-insensitive on purpose: Windows and macOS file
+    # systems treat 'A.txt'/'a.txt' (and composed/decomposed 'é') as the same
+    # file, so we must too.
+    return unicodedata.normalize("NFC", str(p)).casefold()
 
 
 def resolve_collisions(moves: list[Move]) -> list[Move]:

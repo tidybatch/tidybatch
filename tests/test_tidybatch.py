@@ -92,6 +92,15 @@ class TidyBatchTest(unittest.TestCase):
             tidybatch.main(["rename", str(self.root), "--slug", "--apply"])
         self.assertIn("1 file(s) will change.", out.getvalue())
 
+    def test_unicode_normalization_counts_as_collision(self):
+        # 'é' precomposed (NFC) vs 'e' + combining accent (NFD): one file on macOS.
+        a, b = self.make("a.txt"), self.make("b.txt")
+        moves = tidybatch.resolve_collisions([
+            tidybatch.Move(a, self.root / "caf\u00e9.txt"),
+            tidybatch.Move(b, self.root / "cafe\u0301.txt"),
+        ])
+        self.assertEqual(moves[1].dst.name, "cafe\u0301_1.txt")
+
     def test_pro_commands_point_to_pro_without_touching_files(self):
         self.make("a b.txt")
         self.assertEqual(run("organize", str(self.root), "--apply"), 0)
