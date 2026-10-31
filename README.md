@@ -1,0 +1,79 @@
+# TidyBatch
+
+**Bulk rename files without the fear.** Preview every change, apply it, and undo it with one command.
+
+![TidyBatch demo: preview, apply, undo](docs/demo.gif)
+
+[![CI](https://github.com/tidybatch/tidybatch/actions/workflows/ci.yml/badge.svg)](https://github.com/tidybatch/tidybatch/actions/workflows/ci.yml)
+![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
+![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
+![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
+
+Most bulk-rename scripts have a silent bug: renumber `1.txt 2.txt 3.txt` → `2.txt 3.txt 4.txt` and the first `mv` overwrites the original `2.txt`. TidyBatch is built around not doing that:
+
+- **Dry run by default.** Nothing changes until you add `--apply`.
+- **One-command undo.** Every applied run is journaled; `tidybatch undo <folder>` puts every file back.
+- **Never overwrites.** Two-phase renames make chains and swaps safe; clashes get `_1`, `_2`, …
+- **Case-insensitive collision checks**, because Windows and macOS treat `Photo.JPG` and `photo.jpg` as the same file.
+- **One file, standard library only.** Read it in ten minutes before you trust it with your photos.
+
+## Install
+
+```bash
+pipx install git+https://github.com/tidybatch/tidybatch
+# or: uv tool install git+https://github.com/tidybatch/tidybatch
+# or just download tidybatch.py and run: python3 tidybatch.py --help
+```
+
+## Recipes
+
+```bash
+# Clean names: no accents, spaces or symbols, all lowercase
+tidybatch rename ~/Downloads --slug --lower
+
+# Number photos in date order: holiday_001.jpg, holiday_002.jpg, …
+tidybatch rename ./photos -g "*.jpg" --sort date -t "holiday_{n:03}{ext}"
+
+# Put the file date in front: 2024-08-12_invoice.pdf
+tidybatch rename ./invoices -t "{date:%Y-%m-%d}_{stem}{ext}"
+
+# Regex with groups: IMG_2024_0001.jpg -> 2024-photo-0001.jpg
+tidybatch rename . --find "IMG_(\d{4})_(\d+)" --replace "\1-photo-\2"
+
+# Happy with the preview? Run it for real, then change your mind
+tidybatch rename ~/Downloads --slug --lower --apply
+tidybatch undo ~/Downloads
+```
+
+**Template fields:** `{stem}` `{ext}` `{n}` (counter, e.g. `{n:03}`) `{date}` (modification date, e.g. `{date:%Y%m%d}`) `{today}` `{parent}` `{size_kb}`
+
+**Options:** `-r` sub-folders · `-g "*.jpg"` filter · `--hidden` include hidden files · `--sort name|date|size` · `--start N` · `--apply`
+
+## How it stays safe
+
+1. **Plan:** compute every new name without touching the disk, then resolve collisions. A destination is free only if nobody else claimed it *and* whatever is there now is itself moving away.
+2. **Phase 1:** every file moves to a temporary name in the same folder.
+3. **Phase 2:** every temporary file moves to its final name, refusing to overwrite anything that appeared in the meantime.
+4. **Journal:** `<folder>/.tidybatch/journal-*.json` records each completed move, even if the run is interrupted, so `undo` can replay it backwards.
+
+## TidyBatch Pro
+
+This repository is **TidyBatch Core** (rename + undo), free and MIT-licensed. **[TidyBatch Pro](https://whop.com/tidybatch/bulk-file-renamer/?utm_source=github&utm_campaign=tidybatch)** adds:
+
+- `organize`: sort a folder into Images / Documents / Videos…, by year/month, or by extension
+- `dedupe`: find exact duplicates by content (SHA-256), keep the oldest, move the rest aside (never deleted)
+- ready-to-run apps for **Windows and Linux** (no Python needed), plus support
+
+Buying Pro also funds the free version. Thank you!
+
+## Contributing
+
+Bug reports with a reproducible folder layout are gold. Run the tests with:
+
+```bash
+python -m unittest discover -s tests
+```
+
+## License
+
+[MIT](LICENSE)
