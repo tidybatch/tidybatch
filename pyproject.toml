@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tidybatch"
+dynamic = ["version"]
+description = "Bulk rename files safely: dry-run preview, collision-proof two-phase renames, one-command undo."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "TidyBatch" }]
+keywords = ["rename", "bulk-rename", "batch-rename", "files", "cli", "undo", "dry-run"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Filesystems",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/tidybatch/tidybatch"
+Issues = "https://github.com/tidybatch/tidybatch/issues"
+"TidyBatch Pro" = "https://whop.com/tidybatch/bulk-file-renamer/"
+
+[project.scripts]
+tidybatch = "tidybatch:main"
+
+[tool.setuptools]
+py-modules = ["tidybatch"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tidybatch.__version__" }
