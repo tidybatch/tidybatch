@@ -17,6 +17,8 @@ Most bulk-rename scripts have a silent bug: renumber `1.txt 2.txt 3.txt` → `2.
 - **Case-insensitive collision checks**, because Windows and macOS treat `Photo.JPG` and `photo.jpg` as the same file.
 - **One file, standard library only.** Read it in ten minutes before you trust it with your photos.
 
+New to bulk renaming? Read the tested guides at **[tidybatch.github.io/guides](https://tidybatch.github.io/guides/)**: how to rename safely on any OS, how to undo a bulk rename, and how to add dates to file names.
+
 ## Install
 
 ```bash
