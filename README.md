@@ -69,13 +69,17 @@ tidybatch undo ~/Downloads
 3. **Phase 2:** every temporary file moves to its final name, refusing to overwrite anything that appeared in the meantime.
 4. **Journal:** `<folder>/.tidybatch/journal-*.json` records each completed move, even if the run is interrupted, so `undo` can replay it backwards.
 
+## How it's made
+
+Most of the code was written with an AI coding agent. The behaviour that protects your files (two-phase moves, collision checks, undo) is pinned down by the test suite, which runs on Linux, macOS and Windows on every push.
+
 ## TidyBatch Pro
 
 This repository is **TidyBatch Core** (rename + undo), free and MIT-licensed. **[TidyBatch Pro](https://whop.com/tidybatch/bulk-file-renamer/?utm_source=github&utm_campaign=tidybatch)** adds:
 
 - `organize`: sort a folder into Images / Documents / Videos…, by year/month (modified **or photo date taken**), or by extension
 - `dedupe`: find exact duplicates by content (SHA-256), keep the oldest, move the rest aside (never deleted)
-- ready-to-run apps for **Windows and Linux** (no Python needed), plus support
+- ready-to-run apps for **Windows and Linux** (no Python needed), plus free 1.x updates
 
 Buying Pro also funds the free version. Thank you!
 
