@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
@@ -371,10 +371,11 @@ def resolve_collisions(moves: list[Move]) -> list[Move]:
     already claimed it in this plan and either nothing is there on disk, or
     whatever is there is itself being moved away by this plan.
     """
-    active = [m for m in moves if m.src != m.dst]
+    # Compare as text: on Windows Path('Photo.JPG') == Path('photo.jpg'), which would drop case-only renames.
+    active = [m for m in moves if str(m.src) != str(m.dst)]
     leaving = {_key(m.src) for m in active}
     # Files that keep their name still occupy it.
-    claimed = {_key(m.src) for m in moves if m.src == m.dst}
+    claimed = {_key(m.src) for m in moves if str(m.src) == str(m.dst)}
     result = []
     for m in active:
         dst, i = m.dst, 1
@@ -452,10 +453,17 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
                 "version": __version__,
                 "root": str(root.resolve()),
                 "created": datetime.now().isoformat(timespec="seconds"),
-                "moves": [{"src": str(m.src.resolve()), "dst": str(m.dst.resolve())} for m in done],
+                "moves": [{"src": _journal_path(m.src), "dst": _journal_path(m.dst)} for m in done],
             }
             journal.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return journal
+
+
+def _journal_path(p: Path) -> str:
+    # Resolve the folder but keep the name as written: on Windows resolve() returns the on-disk
+    # case, so after Photo.JPG -> photo.jpg the old name would be recorded as photo.jpg and undo
+    # would have nothing to change back.
+    return str(p.parent.resolve() / p.name)
 
 
 def undo(root: Path, journal_path: Path | None) -> int:
@@ -480,6 +488,12 @@ def undo(root: Path, journal_path: Path | None) -> int:
             skipped += 1
             continue
         src.parent.mkdir(parents=True, exist_ok=True)
+        if _key(src) == _key(dst):
+            # Case-only (or accent-form-only) name: some file systems ignore a direct a.txt -> A.txt,
+            # so go through a temporary name, as apply_moves does.
+            tmp = dst.with_name(f"{TMP_PREFIX}{os.getpid()}-undo{dst.suffix}")
+            os.rename(dst, tmp)
+            dst = tmp
         shutil.move(str(dst), str(src))
         _remove_empty_parents(dst.parent, stop_at=journal_root)
         restored += 1

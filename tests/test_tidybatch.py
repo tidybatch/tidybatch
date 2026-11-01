@@ -30,6 +30,15 @@ def jpeg_with_exif_date(when: str) -> bytes:
     return b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload + b"\xff\xd9"
 
 
+def case_sensitive(folder: Path) -> bool:
+    probe = folder / "CaseProbe"
+    probe.write_text("x")
+    try:
+        return not (folder / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
 class TidyBatchTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -49,7 +58,7 @@ class TidyBatchTest(unittest.TestCase):
 
     def names(self, folder: Path | None = None) -> set[str]:
         folder = folder or self.root
-        return {str(p.relative_to(folder)) for p in folder.rglob("*")
+        return {p.relative_to(folder).as_posix() for p in folder.rglob("*")
                 if p.is_file() and tidybatch.JOURNAL_DIR not in p.parts}
 
     def make_photo(self, rel: str, taken: str, age: float = 0) -> Path:
@@ -128,6 +137,8 @@ class TidyBatchTest(unittest.TestCase):
         self.assertEqual(moves[1].dst.name, "photo_1.jpg")
 
     def test_lowering_next_to_the_lowercase_name_keeps_both(self):
+        if not case_sensitive(self.root):
+            self.skipTest("only a case-sensitive file system (Linux) can hold Report.TXT and report.txt together")
         self.make("Report.TXT", "upper")
         self.make("report.txt", "lower")
         run("rename", str(self.root), "--lower", "--apply")
@@ -138,6 +149,14 @@ class TidyBatchTest(unittest.TestCase):
         self.make("Photo.JPG")
         run("rename", str(self.root), "--lower", "--apply")
         self.assertEqual(self.names(), {"photo.jpg"})
+
+    def test_case_only_rename_is_not_dropped_as_a_no_op(self):
+        # Windows paths compare equal regardless of case; the plan must still keep Photo.JPG -> photo.jpg.
+        from pathlib import PureWindowsPath
+        self.assertEqual(PureWindowsPath("Photo.JPG"), PureWindowsPath("photo.jpg"))
+        a = self.make("Photo.JPG")
+        moves = tidybatch.resolve_collisions([tidybatch.Move(a, a.with_name("photo.jpg"))])
+        self.assertEqual([m.dst.name for m in moves], ["photo.jpg"])
 
     def test_undo_after_interrupted_run(self):
         # Ctrl+C halfway through phase 2: what already moved is in the journal, the rest goes back
