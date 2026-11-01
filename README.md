@@ -2,7 +2,7 @@
 
 **Bulk rename files without the fear.** Preview every change, apply it, and undo it with one command.
 
-![TidyBatch demo: preview, apply, undo](docs/demo.gif)
+![TidyBatch demo: preview, apply, undo](https://raw.githubusercontent.com/tidybatch/tidybatch/main/docs/demo.gif)
 
 [![CI](https://github.com/tidybatch/tidybatch/actions/workflows/ci.yml/badge.svg)](https://github.com/tidybatch/tidybatch/actions/workflows/ci.yml)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
@@ -60,7 +60,7 @@ tidybatch undo ~/Downloads
 
 **Options:** `-r` sub-folders · `-g "*.jpg"` filter · `--hidden` include hidden files · `--sort name|date|taken|size` · `--start N` · `--apply`
 
-**Photo dates:** `{taken}` reads EXIF with the standard library only, with no Pillow or exiftool needed. Every CI run checks it against ExifTool on ExifTool's own sample images (JPEG, HEIC, TIFF, DNG, CR2, CR3, NEF, RW2, RAF: same date for every file, [dev/verify_exif.py](dev/verify_exif.py)) and feeds it 20,000 corrupted files, which must never crash or hang it ([dev/fuzz_exif.py](dev/fuzz_exif.py)). Dates stored only in XMP/IPTC aren't read; those files fall back to the modification date.
+**Photo dates:** `{taken}` reads EXIF with the standard library only, with no Pillow or exiftool needed. Every CI run checks it against ExifTool on ExifTool's own sample images (JPEG, HEIC, TIFF, DNG, CR2, CR3, NEF, RW2, RAF: same date for every file, [dev/verify_exif.py](https://github.com/tidybatch/tidybatch/blob/main/dev/verify_exif.py)) and feeds it 20,000 corrupted files, which must never crash or hang it ([dev/fuzz_exif.py](https://github.com/tidybatch/tidybatch/blob/main/dev/fuzz_exif.py)). Dates stored only in XMP/IPTC aren't read; those files fall back to the modification date.
 
 ## How it stays safe
 
@@ -98,4 +98,4 @@ python dev/fuzz_exif.py /tmp/exiftool
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/tidybatch/tidybatch/blob/main/LICENSE)
