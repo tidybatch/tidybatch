@@ -15,7 +15,7 @@ Most bulk-rename scripts have a silent bug: renumber `1.txt 2.txt 3.txt` → `2.
 - **One-command undo.** Every applied run is journaled; `tidybatch undo <folder>` puts every file back.
 - **Never overwrites.** Two-phase renames make chains and swaps safe; clashes get `_1`, `_2`, …
 - **Case-insensitive collision checks**, because Windows and macOS treat `Photo.JPG` and `photo.jpg` as the same file.
-- **One file, standard library only.** Read it in ten minutes before you trust it with your photos.
+- **One file, standard library only.** No dependencies: you can read all of it before you trust it with your photos.
 
 New to bulk renaming? Read the tested guides at **[tidybatch.github.io/guides](https://tidybatch.github.io/guides/)**: how to rename safely on any OS, how to undo a bulk rename, and how to add dates to file names.
 
@@ -39,6 +39,9 @@ tidybatch rename ./photos -g "*.jpg" --sort date -t "holiday_{n:03}{ext}"
 # Put the file date in front: 2024-08-12_invoice.pdf
 tidybatch rename ./invoices -t "{date:%Y-%m-%d}_{stem}{ext}"
 
+# Name photos by when they were TAKEN (EXIF): 2023-07-14_182205.jpg
+tidybatch rename ./camera -t "{taken:%Y-%m-%d_%H%M%S}{ext}"
+
 # Regex with groups: IMG_2024_0001.jpg -> 2024-photo-0001.jpg
 tidybatch rename . --find "IMG_(\d{4})_(\d+)" --replace "\1-photo-\2"
 
@@ -47,9 +50,11 @@ tidybatch rename ~/Downloads --slug --lower --apply
 tidybatch undo ~/Downloads
 ```
 
-**Template fields:** `{stem}` `{ext}` `{n}` (counter, e.g. `{n:03}`) `{date}` (modification date, e.g. `{date:%Y%m%d}`) `{today}` `{parent}` `{size_kb}`
+**Template fields:** `{stem}` `{ext}` `{n}` (counter, e.g. `{n:03}`) `{date}` (modification date, e.g. `{date:%Y%m%d}`) `{taken}` (photo **date taken** from EXIF, falling back to `{date}`) `{today}` `{parent}` `{size_kb}`
 
-**Options:** `-r` sub-folders · `-g "*.jpg"` filter · `--hidden` include hidden files · `--sort name|date|size` · `--start N` · `--apply`
+**Options:** `-r` sub-folders · `-g "*.jpg"` filter · `--hidden` include hidden files · `--sort name|date|taken|size` · `--start N` · `--apply`
+
+**Photo dates:** `{taken}` reads EXIF with the standard library only, with no Pillow or exiftool needed. It's checked against ExifTool's own sample images (JPEG, HEIC, TIFF, DNG, CR2, CR3, NEF, RW2, RAF) and fuzzed with thousands of corrupted files. Dates stored only in XMP/IPTC aren't read; those files fall back to the modification date.
 
 ## How it stays safe
 
@@ -62,7 +67,7 @@ tidybatch undo ~/Downloads
 
 This repository is **TidyBatch Core** (rename + undo), free and MIT-licensed. **[TidyBatch Pro](https://whop.com/tidybatch/bulk-file-renamer/?utm_source=github&utm_campaign=tidybatch)** adds:
 
-- `organize`: sort a folder into Images / Documents / Videos…, by year/month, or by extension
+- `organize`: sort a folder into Images / Documents / Videos…, by year/month (modified **or photo date taken**), or by extension
 - `dedupe`: find exact duplicates by content (SHA-256), keep the oldest, move the rest aside (never deleted)
 - ready-to-run apps for **Windows and Linux** (no Python needed), plus support
 

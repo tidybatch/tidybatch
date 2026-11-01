@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import sys
 import unicodedata
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
@@ -76,11 +77,246 @@ def natural_key(p: Path) -> list:
 
 
 def sort_files(files: Iterable[Path], by: str) -> list[Path]:
+    if by == "taken":
+        return sorted(files, key=lambda p: (taken_or_mtime(p), natural_key(p)))
     if by == "date":
         return sorted(files, key=lambda p: (p.stat().st_mtime, natural_key(p)))
     if by == "size":
         return sorted(files, key=lambda p: (p.stat().st_size, natural_key(p)))
     return sorted(files, key=natural_key)
+
+
+# --------------------------------------------------------------------------- #
+# Photo dates (EXIF "date taken"), standard library only.
+# JPEG, TIFF, TIFF-based RAW (DNG, CR2, NEF, ARW, ORF, RW2), Fuji RAF, Canon CR3
+# and HEIC/HEIF/AVIF. Checked against ExifTool's sample images; see dev/.
+# --------------------------------------------------------------------------- #
+
+_TIFF_MAGIC = {42, 0x4F52, 0x5352, 0x55}  # TIFF, Olympus ORF (x2), Panasonic RW2
+_DATE_TAGS = (0x9003, 0x9004, 0x0132)     # DateTimeOriginal, DateTimeDigitized, DateTime
+
+
+def taken_date(path: Path) -> datetime | None:
+    """EXIF DateTimeOriginal, else DateTimeDigitized, else IFD0 DateTime; None if absent."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(16)
+            if head[:2] == b"\xff\xd8":
+                base = _jpeg_tiff_offset(f, 0)
+            elif head[:4] in (b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"IIU\x00"):
+                base = 0
+            elif head.startswith(b"FUJIFILMCCD-RAW"):
+                f.seek(84)
+                jpeg_at = struct.unpack(">I", f.read(4))[0]
+                base = _jpeg_tiff_offset(f, jpeg_at)
+            elif head[4:12] == b"ftypcrx ":
+                return _cr3_date(f)
+            elif head[4:8] == b"ftyp":
+                base = _isobmff_tiff_offset(f)
+            else:
+                return None
+            return _tiff_date(f, base) if base is not None else None
+    except Exception:  # metadata is best-effort: a broken file must never stop a rename
+        return None
+
+
+def _cr3_date(f) -> datetime | None:
+    """Canon CR3: EXIF lives in 'CMT1' (IFD0) and 'CMT2' (Exif IFD) boxes, each a TIFF."""
+    f.seek(0)
+    head = f.read(1 << 18)
+    for box in (b"CMT2", b"CMT1"):
+        i = head.find(box)
+        if i >= 4:
+            d = _tiff_date(f, i + 4, exif_ifd_at_root=(box == b"CMT2"))
+            if d:
+                return d
+    return None
+
+
+def _jpeg_tiff_offset(f, start: int) -> int | None:
+    """Offset of the TIFF header inside a JPEG's 'Exif' APP1 segment."""
+    pos = start + 2
+    for _ in range(1000):
+        f.seek(pos)
+        marker = f.read(2)
+        if len(marker) < 2 or marker[0] != 0xFF:
+            return None
+        m = marker[1]
+        if m == 0xFF:              # fill byte
+            pos += 1
+            continue
+        if m in (0xD9, 0xDA):      # end of image / start of scan: no EXIF before pixels
+            return None
+        if 0xD0 <= m <= 0xD7 or m == 0x01:
+            pos += 2
+            continue
+        seglen = struct.unpack(">H", f.read(2))[0]
+        if m == 0xE1 and f.read(6) == b"Exif\x00\x00":
+            return pos + 10
+        pos += 2 + seglen
+    return None
+
+
+def _boxes(f, start: int, end: int):
+    pos = start
+    while pos + 8 <= end:
+        f.seek(pos)
+        size, btype = struct.unpack(">I4s", f.read(8))
+        hdr = 8
+        if size == 1:
+            size = struct.unpack(">Q", f.read(8))[0]
+            hdr = 16
+        elif size == 0:
+            size = end - pos
+        if size < hdr:
+            return
+        yield btype, pos, size, hdr
+        pos += size
+
+
+def _isobmff_tiff_offset(f) -> int | None:
+    """HEIC/HEIF/AVIF: locate the 'Exif' item via meta/iinf + meta/iloc."""
+    f.seek(0, 2)
+    file_end = f.tell()
+    meta = next(((p + h + 4, p + s) for t, p, s, h in _boxes(f, 0, file_end) if t == b"meta"), None)
+    if not meta:
+        return None
+    exif_id, iloc = None, None
+    for btype, p, s, h in _boxes(f, *meta):
+        if btype == b"iinf":
+            exif_id = _iinf_exif_id(f, p + h, p + s)
+        elif btype == b"iloc":
+            iloc = (p + h, p + s)
+    if exif_id is None or iloc is None:
+        return None
+    loc = _iloc_offset(f, iloc[0], exif_id)
+    if loc is None:
+        return None
+    f.seek(loc)
+    tiff = loc + 4 + struct.unpack(">I", f.read(4))[0]
+    f.seek(tiff)
+    if f.read(2) not in (b"II", b"MM"):           # some writers point at "Exif\0\0"
+        f.seek(loc)
+        blob = f.read(32)
+        i = blob.find(b"Exif\x00\x00")
+        tiff = loc + i + 6 if i >= 0 else None
+    return tiff
+
+
+def _iinf_exif_id(f, start: int, end: int) -> int | None:
+    f.seek(start)
+    version = f.read(4)[0]
+    f.read(2 if version == 0 else 4)               # entry_count
+    for btype, p, s, h in _boxes(f, f.tell(), end):
+        if btype != b"infe":
+            continue
+        f.seek(p + h)
+        v = f.read(4)[0]
+        if v < 2:
+            continue
+        item_id = struct.unpack(">H" if v == 2 else ">I", f.read(2 if v == 2 else 4))[0]
+        f.read(2)                                   # protection index
+        if f.read(4) == b"Exif":
+            return item_id
+    return None
+
+
+def _uint(f, size: int) -> int:
+    return int.from_bytes(f.read(size), "big") if size else 0
+
+
+def _iloc_offset(f, start: int, wanted: int) -> int | None:
+    f.seek(start)
+    version = f.read(4)[0]
+    b1, b2 = f.read(2)
+    off_size, len_size, base_size = b1 >> 4, b1 & 15, b2 >> 4
+    idx_size = b2 & 15 if version in (1, 2) else 0
+    count = _uint(f, 2 if version < 2 else 4)
+    if count > 4096:
+        return None
+    for _ in range(count):
+        item_id = _uint(f, 2 if version < 2 else 4)
+        method = _uint(f, 2) & 15 if version in (1, 2) else 0
+        f.read(2)                                   # data reference index
+        base = _uint(f, base_size)
+        extents = _uint(f, 2)
+        if extents > 4096:
+            return None
+        first = None
+        for _ in range(extents):
+            _uint(f, idx_size)
+            off = _uint(f, off_size)
+            _uint(f, len_size)
+            if first is None:
+                first = off
+        if item_id == wanted:
+            return base + (first or 0) if method == 0 else None
+    return None
+
+
+def _tiff_date(f, base: int, exif_ifd_at_root: bool = False) -> datetime | None:
+    f.seek(base)
+    hdr = f.read(8)
+    if hdr[:2] == b"II":
+        e = "<"
+    elif hdr[:2] == b"MM":
+        e = ">"
+    else:
+        return None
+    magic, ifd0 = struct.unpack(e + "HI", hdr[2:8])
+    if magic not in _TIFF_MAGIC:
+        return None
+    found: dict[int, tuple] = {}
+    exif_ifd = None
+    for tag, typ, count, raw in _ifd(f, base, ifd0, e):
+        if exif_ifd_at_root and tag in (0x9003, 0x9004):
+            found[tag] = (typ, count, raw)
+        elif tag == 0x8769:
+            exif_ifd = struct.unpack(e + "I", raw)[0]
+        elif tag == 0x0132:
+            found[tag] = (typ, count, raw)
+    if exif_ifd:
+        for tag, typ, count, raw in _ifd(f, base, exif_ifd, e):
+            if tag in (0x9003, 0x9004):
+                found[tag] = (typ, count, raw)
+    for tag in _DATE_TAGS:
+        if tag in found:
+            d = _ascii_date(f, base, e, *found[tag])
+            if d:
+                return d
+    return None
+
+
+def _ifd(f, base: int, offset: int, e: str):
+    f.seek(base + offset)
+    n = struct.unpack(e + "H", f.read(2))[0]
+    if n > 1000:
+        return
+    data = f.read(12 * n)
+    for i in range(n):
+        entry = data[12 * i:12 * i + 12]
+        if len(entry) < 12:
+            return
+        tag, typ, count = struct.unpack(e + "HHI", entry[:8])
+        yield tag, typ, count, entry[8:12]
+
+
+def _ascii_date(f, base: int, e: str, typ: int, count: int, raw: bytes) -> datetime | None:
+    if typ != 2 or count < 19:
+        return None
+    f.seek(base + struct.unpack(e + "I", raw)[0])
+    text = f.read(min(count, 32)).split(b"\x00")[0].decode("ascii", "ignore").strip()
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M"):
+        try:
+            return datetime.strptime(text[:19] if "S" in fmt else text[:16], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def taken_or_mtime(path: Path) -> datetime:
+    """Photo 'date taken' when the file has one, otherwise its modification time."""
+    return taken_date(path) or datetime.fromtimestamp(path.stat().st_mtime)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,6 +341,8 @@ def render_name(template: str, path: Path, index: int, stem: str | None = None) 
         "ext": path.suffix,
         "n": index,
         "date": datetime.fromtimestamp(stat.st_mtime),
+        # Reading EXIF costs a file read, so only do it when the template asks.
+        "taken": taken_or_mtime(path) if "{taken" in template else None,
         "today": datetime.now(),
         "parent": path.parent.name,
         "size_kb": stat.st_size // 1024,
@@ -298,14 +536,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     r = sub.add_parser("rename", parents=[common], help="rename files from a template",
-                       description="Template fields: {stem} {ext} {n} {date} {today} {parent} {size_kb}. "
-                                   "Formats work: {n:03}, {date:%Y-%m-%d}.")
+                       description="Template fields: {stem} {ext} {n} {date} {taken} {today} {parent} {size_kb}. "
+                                   "{date} is the modification time; {taken} is the photo's EXIF date taken "
+                                   "(falls back to {date}). Formats work: {n:03}, {taken:%Y-%m-%d}.")
     r.add_argument("-t", "--template", default="{stem}{ext}", help="new name template (default: {stem}{ext})")
     r.add_argument("--find", help="regex to search in the original name (without extension)")
     r.add_argument("--replace", default="", help="replacement for --find (supports \\1 groups)")
     r.add_argument("--slug", action="store_true", help="remove accents, spaces and symbols")
     r.add_argument("--lower", action="store_true", help="lowercase the whole name")
-    r.add_argument("--sort", choices=["name", "date", "size"], default="name", help="order used for {n}")
+    r.add_argument("--sort", choices=["name", "date", "taken", "size"], default="name", help="order used for {n}")
     r.add_argument("--start", type=int, default=1, help="first value of {n} (default: 1)")
 
     u = sub.add_parser("undo", help="revert the last applied run in a folder")
