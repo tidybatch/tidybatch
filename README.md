@@ -87,7 +87,7 @@ Buying Pro also funds the free version. Thank you!
 
 ## Contributing
 
-Bug reports with a reproducible folder layout are gold. Run the tests with:
+Bug reports with a reproducible folder layout are gold. [CONTRIBUTING.md](https://github.com/tidybatch/tidybatch/blob/main/CONTRIBUTING.md) lists what to include and explains how pull requests are merged (the Core file is generated). Security issues: [SECURITY.md](https://github.com/tidybatch/tidybatch/blob/main/SECURITY.md). Run the tests with:
 
 ```bash
 python -m unittest discover -s tests

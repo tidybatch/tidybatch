@@ -1,0 +1,43 @@
+name: Bug report
+description: A wrong name, a crash, or an undo that didn't restore everything
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If an applied run went wrong, keep `<folder>/.tidybatch/`: `tidybatch undo <folder>` uses the journal in it.
+        Lost or overwritten files are a security issue: please use [SECURITY.md](https://github.com/tidybatch/tidybatch/blob/main/SECURITY.md) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `tidybatch --version`
+      placeholder: tidybatch 1.1.1
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and Python version
+      placeholder: macOS 15.1, Python 3.12
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and its full output
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files involved
+      description: A listing (`ls -la` or `dir`) or a short script that creates them. Names matter; contents usually don't.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
