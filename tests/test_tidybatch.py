@@ -17,6 +17,17 @@ def run(*argv: str) -> int:
         return tidybatch.main(list(argv))
 
 
+def jpeg_with_exif_date(when: str) -> bytes:
+    """Smallest JPEG-ish file whose APP1 segment carries EXIF DateTimeOriginal."""
+    import struct
+    tiff = b"II*\x00" + struct.pack("<I", 8)
+    tiff += struct.pack("<H", 1) + struct.pack("<HHII", 0x8769, 4, 1, 26) + struct.pack("<I", 0)
+    tiff += struct.pack("<H", 1) + struct.pack("<HHII", 0x9003, 2, 20, 44) + struct.pack("<I", 0)
+    tiff += when.encode("ascii") + b"\x00"
+    payload = b"Exif\x00\x00" + tiff
+    return b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload + b"\xff\xd9"
+
+
 class TidyBatchTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -38,6 +49,41 @@ class TidyBatchTest(unittest.TestCase):
         folder = folder or self.root
         return {str(p.relative_to(folder)) for p in folder.rglob("*")
                 if p.is_file() and tidybatch.JOURNAL_DIR not in p.parts}
+
+    def make_photo(self, rel: str, taken: str, age: float = 0) -> Path:
+        p = self.root / rel
+        p.write_bytes(jpeg_with_exif_date(taken))
+        if age:
+            t = time.time() - age
+            os.utime(p, (t, t))
+        return p
+
+    def test_taken_date_reads_exif(self):
+        p = self.make_photo("a.jpg", "2021:05:06 07:08:09")
+        self.assertEqual(str(tidybatch.taken_date(p)), "2021-05-06 07:08:09")
+
+    def test_taken_template_uses_exif_not_mtime(self):
+        self.make_photo("IMG_1.jpg", "2019:12:31 23:59:59")
+        run("rename", str(self.root), "-t", "{taken:%Y-%m-%d_%H%M%S}{ext}", "--apply")
+        self.assertEqual(self.names(), {"2019-12-31_235959.jpg"})
+
+    def test_taken_falls_back_to_mtime(self):
+        self.make("notes.txt")
+        p = self.root / "notes.txt"
+        t = time.mktime((2020, 2, 3, 12, 0, 0, 0, 0, -1)); os.utime(p, (t, t))
+        run("rename", str(self.root), "-t", "{taken:%Y-%m-%d}_{stem}{ext}", "--apply")
+        self.assertEqual(self.names(), {"2020-02-03_notes.txt"})
+
+    def test_garbage_file_has_no_taken_date(self):
+        p = self.root / "broken.jpg"
+        p.write_bytes(b"\xff\xd8\xff\xe1\x00")
+        self.assertIsNone(tidybatch.taken_date(p))
+
+    def test_sort_taken_orders_by_photo_date(self):
+        self.make_photo("b.jpg", "2020:01:01 10:00:00")
+        self.make_photo("a.jpg", "2021:01:01 10:00:00")
+        run("rename", str(self.root), "--sort", "taken", "-t", "{n}{ext}", "--apply")
+        self.assertEqual(tidybatch.taken_date(self.root / "1.jpg").year, 2020)
 
     def test_dry_run_changes_nothing(self):
         self.make("My File.TXT")
