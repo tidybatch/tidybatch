@@ -1,4 +1,6 @@
 """Run with:  python -m unittest discover -s tests  (from the product folder)."""
+from __future__ import annotations
+
 import io
 import os
 import sys

@@ -13,7 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.10", "3.13"]
+        # 3.9 is what macOS ships as /usr/bin/python3 (Command Line Tools)
+        python: ["3.9", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -26,3 +27,24 @@ jobs:
         run: |
           python -m pip install .
           tidybatch --version
+
+  exif:
+    # The photo-date parser against ExifTool's own sample images, plus a fuzz run.
+    # ExifTool is pinned so a new upstream sample can't turn CI red on its own.
+    runs-on: ubuntu-latest
+    env:
+      EXIFTOOL_COMMIT: 980409314fddbd83d9092b5c160fafab7f67fd52  # 13.60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Fetch ExifTool and its sample images
+        run: |
+          git init -q "$RUNNER_TEMP/exiftool"
+          git -C "$RUNNER_TEMP/exiftool" fetch -q --depth 1 https://github.com/exiftool/exiftool "$EXIFTOOL_COMMIT"
+          git -C "$RUNNER_TEMP/exiftool" checkout -q FETCH_HEAD
+      - name: Dates match ExifTool
+        run: python dev/verify_exif.py "$RUNNER_TEMP/exiftool"
+      - name: Corrupted files never crash or hang
+        run: python dev/fuzz_exif.py "$RUNNER_TEMP/exiftool" 20000
