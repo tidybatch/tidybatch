@@ -1,0 +1,45 @@
+name: Publish to PyPI
+
+# Trusted publishing (OIDC): PyPI trusts this workflow, so no token is stored anywhere.
+# PyPI side: publisher for project "tidybatch", owner "tidybatch", repository "tidybatch",
+# workflow "publish.yml", environment "pypi".
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Release tag matches the version
+        if: github.event_name == 'release'
+        run: test "$GITHUB_REF_NAME" = "v$(python -c 'import tidybatch; print(tidybatch.__version__)')"
+      - name: Build
+        run: python -m pip install build==1.2.2 && python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # only this job can prove to PyPI that it is this workflow
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
