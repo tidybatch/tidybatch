@@ -117,6 +117,50 @@ class TidyBatchTest(unittest.TestCase):
         self.assertEqual(self.names(), {"a_b.txt", "a_b_1.txt"})
         self.assertEqual((self.root / "a_b.txt").read_text(), "2")
 
+    def test_case_only_collision_on_linux(self):
+        # Two new names that differ only in case: Linux would happily create both, but the same
+        # folder on a Mac or Windows holds just one of them, so the second must get a suffix.
+        a, b = self.make("a.txt"), self.make("b.txt")
+        moves = tidybatch.resolve_collisions([
+            tidybatch.Move(a, self.root / "Photo.jpg"),
+            tidybatch.Move(b, self.root / "photo.jpg"),
+        ])
+        self.assertEqual(moves[1].dst.name, "photo_1.jpg")
+
+    def test_lowering_next_to_the_lowercase_name_keeps_both(self):
+        self.make("Report.TXT", "upper")
+        self.make("report.txt", "lower")
+        run("rename", str(self.root), "--lower", "--apply")
+        self.assertEqual((self.root / "report.txt").read_text(), "lower")
+        self.assertEqual((self.root / "report_1.txt").read_text(), "upper")
+
+    def test_case_only_rename_of_one_file_needs_no_suffix(self):
+        self.make("Photo.JPG")
+        run("rename", str(self.root), "--lower", "--apply")
+        self.assertEqual(self.names(), {"photo.jpg"})
+
+    def test_undo_after_interrupted_run(self):
+        # Ctrl+C halfway through phase 2: what already moved is in the journal, the rest goes back
+        # to its original name, no temporary names are left, and undo restores everything.
+        from unittest import mock
+        for name in ("A.txt", "B.txt", "C.txt"):
+            self.make(name, content=name)
+        real_move, calls = tidybatch.shutil.move, []
+
+        def interrupted(src, dst):
+            calls.append(dst)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            return real_move(src, dst)
+
+        with mock.patch.object(tidybatch.shutil, "move", side_effect=interrupted):
+            self.assertEqual(run("rename", str(self.root), "--lower", "--apply"), 130)
+        self.assertEqual(len(self.names()), 3)
+        self.assertFalse(any(tidybatch.TMP_PREFIX in n for n in self.names()))
+        self.assertEqual(run("undo", str(self.root)), 0)
+        self.assertEqual(self.names(), {"A.txt", "B.txt", "C.txt"})
+        self.assertEqual((self.root / "B.txt").read_text(), "B.txt")
+
     def test_find_replace_with_groups(self):
         self.make("IMG_2024_0001.jpg")
         run("rename", str(self.root), "--find", r"IMG_(\d{4})_(\d+)", "--replace", r"\1-photo-\2", "--apply")
