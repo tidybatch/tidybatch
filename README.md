@@ -27,6 +27,12 @@ pipx install git+https://github.com/tidybatch/tidybatch
 # or just download tidybatch.py and run: python3 tidybatch.py --help
 ```
 
+Try it on a folder without installing anything permanent (it's a preview, so nothing changes):
+
+```bash
+uvx --from git+https://github.com/tidybatch/tidybatch tidybatch rename ~/Downloads --slug --lower
+```
+
 ## Recipes
 
 ```bash
@@ -54,7 +60,7 @@ tidybatch undo ~/Downloads
 
 **Options:** `-r` sub-folders · `-g "*.jpg"` filter · `--hidden` include hidden files · `--sort name|date|taken|size` · `--start N` · `--apply`
 
-**Photo dates:** `{taken}` reads EXIF with the standard library only, with no Pillow or exiftool needed. It's checked against ExifTool's own sample images (JPEG, HEIC, TIFF, DNG, CR2, CR3, NEF, RW2, RAF) and fuzzed with thousands of corrupted files. Dates stored only in XMP/IPTC aren't read; those files fall back to the modification date.
+**Photo dates:** `{taken}` reads EXIF with the standard library only, with no Pillow or exiftool needed. Every CI run checks it against ExifTool on ExifTool's own sample images (JPEG, HEIC, TIFF, DNG, CR2, CR3, NEF, RW2, RAF: same date for every file, [dev/verify_exif.py](dev/verify_exif.py)) and feeds it 20,000 corrupted files, which must never crash or hang it ([dev/fuzz_exif.py](dev/fuzz_exif.py)). Dates stored only in XMP/IPTC aren't read; those files fall back to the modification date.
 
 ## How it stays safe
 
@@ -79,6 +85,11 @@ Bug reports with a reproducible folder layout are gold. Run the tests with:
 
 ```bash
 python -m unittest discover -s tests
+
+# photo-date checks (needs perl and an ExifTool checkout)
+git clone --depth 1 https://github.com/exiftool/exiftool /tmp/exiftool
+python dev/verify_exif.py /tmp/exiftool
+python dev/fuzz_exif.py /tmp/exiftool
 ```
 
 ## License
