@@ -5,6 +5,7 @@
 ![TidyBatch demo: preview, apply, undo](https://raw.githubusercontent.com/tidybatch/tidybatch/main/docs/demo.gif)
 
 [![CI](https://github.com/tidybatch/tidybatch/actions/workflows/ci.yml/badge.svg)](https://github.com/tidybatch/tidybatch/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tidybatch)](https://pypi.org/project/tidybatch/)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -22,15 +23,16 @@ New to bulk renaming? Read the tested guides at **[tidybatch.github.io/guides](h
 ## Install
 
 ```bash
-pipx install git+https://github.com/tidybatch/tidybatch
-# or: uv tool install git+https://github.com/tidybatch/tidybatch
+pipx install tidybatch
+# or: uv tool install tidybatch
+# or: pip install tidybatch
 # or just download tidybatch.py and run: python3 tidybatch.py --help
 ```
 
 Try it on a folder without installing anything permanent (it's a preview, so nothing changes):
 
 ```bash
-uvx --from git+https://github.com/tidybatch/tidybatch tidybatch rename ~/Downloads --slug --lower
+uvx tidybatch rename ~/Downloads --slug --lower
 ```
 
 ## Recipes
