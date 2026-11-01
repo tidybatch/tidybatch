@@ -564,10 +564,11 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(errors="replace")
     args = build_parser().parse_args(argv)
     if args.command in ("organize", "dedupe"):
+        # Non-zero so a script calling it never mistakes "not available" for success.
         print(f"`{args.command}` is part of TidyBatch Pro (one-time purchase, includes ready-to-run apps):\n"
               f"  https://whop.com/tidybatch/bulk-file-renamer/\n"
-              "TidyBatch Core (this version) does `rename` and `undo`.")
-        return 0
+              "TidyBatch Core (this version) does `rename` and `undo`.", file=sys.stderr)
+        return 2
     root: Path = args.folder.expanduser()
     if not root.is_dir():
         print(f"error: '{root}' is not a folder", file=sys.stderr)

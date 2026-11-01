@@ -151,8 +151,14 @@ class TidyBatchTest(unittest.TestCase):
 
     def test_pro_commands_point_to_pro_without_touching_files(self):
         self.make("a b.txt")
-        self.assertEqual(run("organize", str(self.root), "--apply"), 0)
-        self.assertEqual(run("dedupe", str(self.root)), 0)
+        for argv in (["organize", str(self.root), "--apply"], ["dedupe", str(self.root)]):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = tidybatch.main(argv)
+            # A script must not mistake "not in Core" for success.
+            self.assertEqual(code, 2)
+            self.assertIn("TidyBatch Pro", err.getvalue())
+            self.assertEqual(out.getvalue(), "")
         self.assertEqual(self.names(), {"a b.txt"})
 
     def test_bad_template_is_a_clean_error(self):
