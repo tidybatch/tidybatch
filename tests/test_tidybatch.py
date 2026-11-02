@@ -180,6 +180,55 @@ class TidyBatchTest(unittest.TestCase):
         self.assertEqual(self.names(), {"A.txt", "B.txt", "C.txt"})
         self.assertEqual((self.root / "B.txt").read_text(), "B.txt")
 
+    def test_journal_is_written_before_any_file_moves(self):
+        # Full disk: if the journal cannot be written, nothing may move (there would be no undo).
+        import errno
+        from unittest import mock
+        self.make("A.txt")
+        real_write = Path.write_text
+
+        def full_disk(path, *args, **kwargs):
+            if tidybatch.JOURNAL_DIR in path.parts:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_write(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", autospec=True, side_effect=full_disk):
+            self.assertEqual(run("rename", str(self.root), "--lower", "--apply"), 2)
+        self.assertEqual(self.names(), {"A.txt"})
+        self.assertEqual(list((self.root / tidybatch.JOURNAL_DIR).iterdir()), [])
+
+    def test_failed_journal_update_keeps_the_real_error_and_undo_works(self):
+        # Interrupted run, then the disk fills up while the journal is trimmed to what moved:
+        # the interrupt must not be hidden, and the journal written before moving still allows undo.
+        import errno
+        from unittest import mock
+        for name in ("A.txt", "B.txt", "C.txt"):
+            self.make(name, content=name)
+        real_move, real_write, calls = tidybatch.shutil.move, Path.write_text, []
+
+        def interrupted(src, dst):
+            calls.append(dst)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            return real_move(src, dst)
+
+        def full_after_interrupt(path, *args, **kwargs):
+            if len(calls) >= 2 and tidybatch.JOURNAL_DIR in path.parts:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_write(path, *args, **kwargs)
+
+        err = io.StringIO()
+        with mock.patch.object(tidybatch.shutil, "move", side_effect=interrupted), \
+                mock.patch.object(Path, "write_text", autospec=True, side_effect=full_after_interrupt), \
+                redirect_stdout(io.StringIO()), redirect_stderr(err):
+            self.assertEqual(tidybatch.main(["rename", str(self.root), "-t", "{n}{ext}", "--apply"]), 130)
+        self.assertIn("warning:", err.getvalue())
+        self.assertEqual(self.names(), {"1.txt", "B.txt", "C.txt"})
+        # The journal lists all three planned moves; the two that never happened are skipped.
+        self.assertEqual(run("undo", str(self.root)), 1)
+        self.assertEqual(self.names(), {"A.txt", "B.txt", "C.txt"})
+        self.assertEqual((self.root / "A.txt").read_text(), "A.txt")
+
     def forge_journal(self, payload) -> Path:
         import json
         j = self.root / tidybatch.JOURNAL_DIR / "journal-forged.json"

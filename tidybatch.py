@@ -422,7 +422,9 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
     """
     Two-phase move: every source first goes to a temporary name, then to its
     final name. This makes chains and swaps safe (a->b while b->c, or a<->b).
-    The journal is written even if something fails halfway.
+    The journal lists every planned move before anything moves, so a full disk
+    stops the run before it starts; if the run fails halfway it is trimmed to
+    the moves that happened.
     """
     journal_dir = root / JOURNAL_DIR
     try:
@@ -430,6 +432,10 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
     except OSError as e:
         raise TidyError(f"Cannot create the undo journal in '{journal_dir}' ({e.strerror or e}). Nothing was changed.")
     journal = journal_dir / f"journal-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
+    try:
+        _write_journal(journal, root, moves)
+    except OSError as e:
+        raise TidyError(f"Cannot write the undo journal '{journal}' ({e.strerror or e}). Nothing was changed.")
 
     staged: list[tuple[Move, Path]] = []
     done: list[Move] = []
@@ -449,17 +455,38 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
         for m, tmp in staged:
             if id(m) not in finished and tmp.exists():
                 os.rename(tmp, m.src)
+        try:
+            if done:
+                _write_journal(journal, root, done)
+            else:
+                journal.unlink()
+        except OSError as e:
+            # Never hide the real error. The full journal is still there and undo skips the moves
+            # that did not happen.
+            print(f"warning: could not update the undo journal ({e.strerror or e}); "
+                  f"undo will skip the files that were not moved.", file=sys.stderr)
         raise
-    finally:
-        if done:
-            payload = {
-                "version": __version__,
-                "root": str(root.resolve()),
-                "created": datetime.now().isoformat(timespec="seconds"),
-                "moves": [{"src": _journal_path(m.src), "dst": _journal_path(m.dst)} for m in done],
-            }
-            journal.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return journal
+
+
+def _write_journal(journal: Path, root: Path, moves: list[Move]) -> None:
+    # Write a side file and swap it in, so a full disk never leaves a half-written journal.
+    payload = {
+        "version": __version__,
+        "root": str(root.resolve()),
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "moves": [{"src": _journal_path(m.src), "dst": _journal_path(m.dst)} for m in moves],
+    }
+    part = journal.with_name(journal.name + ".part")
+    try:
+        part.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(part, journal)
+    except OSError:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _journal_path(p: Path) -> str:
