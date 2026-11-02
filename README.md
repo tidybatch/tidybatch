@@ -69,7 +69,7 @@ tidybatch undo ~/Downloads
 1. **Plan:** compute every new name without touching the disk, then resolve collisions. A destination is free only if nobody else claimed it *and* whatever is there now is itself moving away.
 2. **Phase 1:** every file moves to a temporary name in the same folder.
 3. **Phase 2:** every temporary file moves to its final name, refusing to overwrite anything that appeared in the meantime.
-4. **Journal:** `<folder>/.tidybatch/journal-*.json` records each completed move, even if the run is interrupted, so `undo` can replay it backwards.
+4. **Journal:** `<folder>/.tidybatch/journal-*.json` is written before any file moves and records how far the run got, so `undo` restores every file, chains and swaps included, even after a crash or a power cut. A run that fails or is interrupted (Ctrl+C) puts every file back by itself.
 
 ## How it's made
 

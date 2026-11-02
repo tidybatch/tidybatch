@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
@@ -422,9 +422,11 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
     """
     Two-phase move: every source first goes to a temporary name, then to its
     final name. This makes chains and swaps safe (a->b while b->c, or a<->b).
-    The journal lists every planned move before anything moves, so a full disk
-    stops the run before it starts; if the run fails halfway it is trimmed to
-    the moves that happened.
+
+    The journal is written before anything moves (a full disk stops the run
+    before it starts) and records the phase the run is in, so even after a
+    crash or a power cut `undo` knows where every file is. If the run fails or
+    is interrupted, every file goes back to its original name.
     """
     journal_dir = root / JOURNAL_DIR
     try:
@@ -432,50 +434,82 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
     except OSError as e:
         raise TidyError(f"Cannot create the undo journal in '{journal_dir}' ({e.strerror or e}). Nothing was changed.")
     journal = journal_dir / f"journal-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
+    tmps = [m.src.with_name(f"{TMP_PREFIX}{os.getpid()}-{i}{m.src.suffix}") for i, m in enumerate(moves)]
     try:
-        _write_journal(journal, root, moves)
+        _write_journal(journal, root, moves, tmps, "planned")
     except OSError as e:
         raise TidyError(f"Cannot write the undo journal '{journal}' ({e.strerror or e}). Nothing was changed.")
 
-    staged: list[tuple[Move, Path]] = []
-    done: list[Move] = []
+    staged = done = 0  # moves[:staged] are at their temporary name or later, moves[:done] at their new name
     try:
-        for i, m in enumerate(moves):
-            tmp = m.src.with_name(f"{TMP_PREFIX}{os.getpid()}-{i}{m.src.suffix}")
+        for m, tmp in zip(moves, tmps):
             os.rename(m.src, tmp)
-            staged.append((m, tmp))
-        for m, tmp in staged:
+            staged += 1
+        try:
+            _write_journal(journal, root, moves, tmps, "staged")
+        except OSError as e:
+            raise TidyError(f"Cannot update the undo journal '{journal}' ({e.strerror or e}). Nothing was changed.")
+        for m, tmp in zip(moves, tmps):
             if m.dst.exists():
-                raise TidyError(f"Refusing to overwrite '{m.dst}' (it appeared during the run).")
+                raise TidyError(f"Refusing to overwrite '{m.dst}' (it appeared during the run). Nothing was changed.")
             m.dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(tmp), str(m.dst))
-            done.append(m)
+            done += 1
     except BaseException:
-        finished = {id(m) for m in done}
-        for m, tmp in staged:
-            if id(m) not in finished and tmp.exists():
-                os.rename(tmp, m.src)
-        try:
-            if done:
-                _write_journal(journal, root, done)
-            else:
-                journal.unlink()
-        except OSError as e:
-            # Never hide the real error. The full journal is still there and undo skips the moves
-            # that did not happen.
-            print(f"warning: could not update the undo journal ({e.strerror or e}); "
-                  f"undo will skip the files that were not moved.", file=sys.stderr)
+        _roll_back(moves[:staged], tmps[:staged], done, journal, root)
         raise
+    try:
+        _write_journal(journal, root, moves, tmps, "done")
+    except OSError:
+        pass  # the "staged" journal already tells undo that every file is at its new name
     return journal
 
 
-def _write_journal(journal: Path, root: Path, moves: list[Move]) -> None:
+def _roll_back(moves: list[Move], tmps: list[Path], done: int, journal: Path, root: Path) -> None:
+    """Put every file of a failed run back under its original name, never overwriting anything.
+
+    Moved files first go back to their temporary names, and only then does every temporary name go
+    back to its original: in a chain (1->2, 2->3) the original "2" may be occupied by the file that
+    was "1" until it moves away.
+    """
+    for m, tmp in reversed(list(zip(moves[:done], tmps[:done]))):
+        shutil.move(str(m.dst), str(tmp))
+    try:
+        # Every file is at its temporary name now; from here on each one is at its temporary name or
+        # back at its original, which is what "planned" tells undo after a crash.
+        _write_journal(journal, root, moves, tmps, "planned")
+    except OSError:
+        pass
+    stuck: list[int] = []
+    for i, (m, tmp) in enumerate(zip(moves, tmps)):
+        if m.src.exists():  # something took the original name during the run
+            stuck.append(i)
+        else:
+            os.rename(tmp, m.src)
+    try:
+        if stuck:
+            _write_journal(journal, root, [moves[i] for i in stuck], [tmps[i] for i in stuck], "planned")
+        else:
+            journal.unlink()
+    except OSError as e:
+        print(f"warning: could not update the undo journal ({e.strerror or e}). "
+              f"Delete '{journal}' before running undo in this folder.", file=sys.stderr)
+    for i in stuck:
+        print(f"warning: '{moves[i].src.name}' was taken during the run, so the file that had that name "
+              f"is now '{tmps[i].name}'.", file=sys.stderr)
+
+
+def _write_journal(journal: Path, root: Path, moves: list[Move], tmps: list[Path], state: str) -> None:
     # Write a side file and swap it in, so a full disk never leaves a half-written journal.
     payload = {
         "version": __version__,
         "root": str(root.resolve()),
         "created": datetime.now().isoformat(timespec="seconds"),
-        "moves": [{"src": _journal_path(m.src), "dst": _journal_path(m.dst)} for m in moves],
+        # planned: each file is at its temporary name if that exists, else still at its original;
+        # staged: at its temporary name if that exists, else at its new name; done: at its new name.
+        "state": state,
+        "moves": [{"src": _journal_path(m.src), "dst": _journal_path(m.dst), "tmp": _journal_path(t)}
+                  for m, t in zip(moves, tmps)],
     }
     part = journal.with_name(journal.name + ".part")
     try:
@@ -496,7 +530,8 @@ def _journal_path(p: Path) -> str:
     return str(p.parent.resolve() / p.name)
 
 
-def _read_journal(journal_path: Path) -> list[tuple[Path, Path]]:
+def _read_journal(journal_path: Path) -> tuple[str, list[tuple[Path, Path, Path | None]]]:
+    """Return the run's state and its moves as (original, new name, temporary name or None)."""
     try:
         data = json.loads(journal_path.read_text(encoding="utf-8"))
     except OSError as e:
@@ -505,9 +540,13 @@ def _read_journal(journal_path: Path) -> list[tuple[Path, Path]]:
         raise TidyError(f"Journal '{journal_path}' is damaged (not valid JSON). Nothing was changed.")
     moves = data.get("moves") if isinstance(data, dict) else None
     if not isinstance(moves, list) or not all(
-            isinstance(m, dict) and isinstance(m.get("src"), str) and isinstance(m.get("dst"), str) for m in moves):
+            isinstance(m, dict) and isinstance(m.get("src"), str) and isinstance(m.get("dst"), str)
+            and isinstance(m.get("tmp", ""), str) for m in moves):
         raise TidyError(f"'{journal_path}' is not a TidyBatch journal (no valid list of moves). Nothing was changed.")
-    return [(Path(m["src"]), Path(m["dst"])) for m in moves]
+    state = data.get("state", "done")  # journals from 1.1.3 and earlier list finished moves only
+    if state not in ("planned", "staged", "done"):
+        raise TidyError(f"'{journal_path}' has an unknown state '{state}'. Nothing was changed.")
+    return state, [(Path(m["src"]), Path(m["dst"]), Path(m["tmp"]) if m.get("tmp") else None) for m in moves]
 
 
 def _inside(p: Path, folders: list[Path]) -> bool:
@@ -523,36 +562,47 @@ def undo(root: Path, journal_path: Path | None, dest: Path | None = None) -> int
             raise TidyError(f"No journal found in '{journal_dir}'. Nothing to undo.")
         journal_path = journals[-1]
 
-    moves = _read_journal(journal_path)
+    state, moves = _read_journal(journal_path)
     # The journal is a plain file inside the folder, so anyone who hands you the folder can edit it.
     # Only trust paths inside the folder you named (plus --dest, if you used one when applying).
     folder = root.resolve()
     allowed = [folder] + ([dest.expanduser().resolve()] if dest else [])
-    restored = skipped = outside = 0
-    for src, dst in reversed(moves):
-        if not (_inside(src, [folder]) and _inside(dst, allowed)):
-            print(f"  skip (outside '{root}'{' and --dest' if dest else ''}): {dst} -> {src}")
+    skipped = outside = 0
+    todo: list[tuple[Path, Path]] = []  # (original name, where the file is now)
+    for src, dst, tmp in moves:
+        if tmp is not None and not tmp.name.startswith(TMP_PREFIX):
+            tmp = None
+        # Where the file is, given how far the run got (see _write_journal).
+        if state != "done" and tmp is not None and _inside(tmp, [folder]) and tmp.exists():
+            now = tmp
+        elif state == "planned":
+            continue  # the run stopped before this file moved: it still has its original name
+        else:
+            now = dst
+        if not (_inside(src, [folder]) and _inside(now, allowed)):
+            print(f"  skip (outside '{root}'{' and --dest' if dest else ''}): {now} -> {src}")
             skipped += 1
             outside += 1
-            continue
-        if not dst.exists():
-            print(f"  skip (missing now): {dst}")
+        elif not now.exists():
+            print(f"  skip (missing now): {now}")
             skipped += 1
-            continue
-        if src.exists() and _key(src) != _key(dst):
+        else:
+            todo.append((src, now))
+    # A file can go back to a name that is taken only if the file holding it is also going back
+    # (chains and swaps: 1->2, 2->3). Drop the others until that holds for every file left.
+    while True:
+        leaving = {_key(now) for _, now in todo}
+        blocked = [(src, now) for src, now in todo if src.exists() and _key(src) not in leaving]
+        if not blocked:
+            break
+        for src, now in blocked:
             print(f"  skip (original name taken): {src}")
+            todo.remove((src, now))
             skipped += 1
-            continue
-        src.parent.mkdir(parents=True, exist_ok=True)
-        if _key(src) == _key(dst):
-            # Case-only (or accent-form-only) name: some file systems ignore a direct a.txt -> A.txt,
-            # so go through a temporary name, as apply_moves does.
-            tmp = dst.with_name(f"{TMP_PREFIX}{os.getpid()}-undo{dst.suffix}")
-            os.rename(dst, tmp)
-            dst = tmp
-        shutil.move(str(dst), str(src))
-        _remove_empty_parents(dst.parent, stop_at=next(f for f in reversed(allowed) if _inside(dst.parent, [f])))
-        restored += 1
+    restored = _restore(todo)
+    skipped += len(todo) - restored
+    for _, now in todo:
+        _remove_empty_parents(now.parent, stop_at=next(f for f in reversed(allowed) if _inside(now.parent, [f])))
 
     print(f"Restored {restored} file(s), skipped {skipped}. Journal: {journal_path.name}")
     if outside:
@@ -562,6 +612,38 @@ def undo(root: Path, journal_path: Path | None, dest: Path | None = None) -> int
     else:
         journal_path.rename(journal_path.with_suffix(".undone"))
     return 0 if skipped == 0 else 1
+
+
+def _restore(todo: list[tuple[Path, Path]]) -> int:
+    """Move each file (original, now) back to its original name, in two phases like apply_moves.
+
+    Going through temporary names makes chains, swaps and case-only renames come back whole. If
+    anything fails, the files that already went back move again to where they were, so a second
+    undo starts from the same state. Returns how many files went back.
+    """
+    tmps = [now.with_name(f"{TMP_PREFIX}{os.getpid()}-undo-{i}{now.suffix}") for i, (_, now) in enumerate(todo)]
+    staged = 0
+    back: list[int] = []
+    try:
+        for (_, now), tmp in zip(todo, tmps):
+            os.rename(now, tmp)
+            staged += 1
+        for i, ((src, now), tmp) in enumerate(zip(todo, tmps)):
+            if src.exists():  # appeared since the plan was made: leave the file where it was
+                print(f"  skip (original name taken): {src}")
+                os.rename(tmp, now)
+                continue
+            src.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(tmp), str(src))
+            back.append(i)
+    except BaseException:
+        for i in reversed(back):
+            shutil.move(str(todo[i][0]), str(tmps[i]))
+        for (_, now), tmp in zip(todo[:staged], tmps[:staged]):
+            if tmp.exists() and not now.exists():
+                os.rename(tmp, now)
+        raise
+    return len(back)
 
 
 def _remove_empty_parents(folder: Path, stop_at: Path) -> None:
@@ -681,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("\nInterrupted. Files already moved are listed in the journal; run `undo` to revert.", file=sys.stderr)
+        print("\nInterrupted. Every file was put back under its original name.", file=sys.stderr)
         return 130
 
 

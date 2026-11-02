@@ -158,27 +158,97 @@ class TidyBatchTest(unittest.TestCase):
         moves = tidybatch.resolve_collisions([tidybatch.Move(a, a.with_name("photo.jpg"))])
         self.assertEqual([m.dst.name for m in moves], ["photo.jpg"])
 
-    def test_undo_after_interrupted_run(self):
-        # Ctrl+C halfway through phase 2: what already moved is in the journal, the rest goes back
-        # to its original name, no temporary names are left, and undo restores everything.
+    def interrupt_move(self, at: int):
+        """Patch shutil.move so the run is interrupted (Ctrl+C) on its `at`-th move."""
         from unittest import mock
-        for name in ("A.txt", "B.txt", "C.txt"):
-            self.make(name, content=name)
         real_move, calls = tidybatch.shutil.move, []
 
         def interrupted(src, dst):
             calls.append(dst)
-            if len(calls) == 2:
+            if len(calls) == at:
                 raise KeyboardInterrupt
             return real_move(src, dst)
 
-        with mock.patch.object(tidybatch.shutil, "move", side_effect=interrupted):
+        return mock.patch.object(tidybatch.shutil, "move", side_effect=interrupted)
+
+    def contents(self) -> dict[str, str]:
+        return {n: (self.root / n).read_text() for n in self.names()}
+
+    def numbered(self) -> dict[str, str]:
+        for i in (1, 2, 3):
+            self.make(f"{i}.txt", content=f"content-{i}")
+        return self.contents()
+
+    def test_interrupted_run_puts_every_file_back(self):
+        # Ctrl+C halfway through phase 2: every file goes back to its original name, no temporary
+        # names are left, and no journal is left to undo.
+        for name in ("A.txt", "B.txt", "C.txt"):
+            self.make(name, content=name)
+        with self.interrupt_move(2):
             self.assertEqual(run("rename", str(self.root), "--lower", "--apply"), 130)
-        self.assertEqual(len(self.names()), 3)
-        self.assertFalse(any(tidybatch.TMP_PREFIX in n for n in self.names()))
+        self.assertEqual(self.contents(), {"A.txt": "A.txt", "B.txt": "B.txt", "C.txt": "C.txt"})
+        self.assertEqual(list((self.root / tidybatch.JOURNAL_DIR).iterdir()), [])
+
+    def test_interrupted_numbering_chain_loses_nothing(self):
+        # 1->2, 2->3, 3->4 stopped after the first move: "2" already holds the old "1" when the old
+        # "2" has to go back. Up to 1.1.3 putting it back overwrote the old "1".
+        before = self.numbered()
+        with self.interrupt_move(2):
+            self.assertEqual(run("rename", str(self.root), "-t", "{n}{ext}", "--start", "2", "--apply"), 130)
+        self.assertEqual(self.contents(), before)
+
+    def test_undo_of_numbering_chain_restores_every_file(self):
+        # Up to 1.1.3 undo put back only "1" and skipped "2" and "3" as taken.
+        before = self.numbered()
+        run("rename", str(self.root), "-t", "{n}{ext}", "--start", "2", "--apply")
         self.assertEqual(run("undo", str(self.root)), 0)
-        self.assertEqual(self.names(), {"A.txt", "B.txt", "C.txt"})
-        self.assertEqual((self.root / "B.txt").read_text(), "B.txt")
+        self.assertEqual(self.contents(), before)
+
+    def test_undo_of_a_swap(self):
+        a, b = self.make("a.txt", "A"), self.make("b.txt", "B")
+        with redirect_stdout(io.StringIO()):
+            tidybatch.apply_moves([tidybatch.Move(a, b), tidybatch.Move(b, a)], self.root)
+            self.assertEqual(self.contents(), {"a.txt": "B", "b.txt": "A"})
+            self.assertEqual(tidybatch.undo(self.root, None), 0)
+        self.assertEqual(self.contents(), {"a.txt": "A", "b.txt": "B"})
+
+    def crash(self, target: str, at: int, *argv: str) -> None:
+        """Run tidybatch in a child process that dies like kill -9 on its `at`-th call to `target`."""
+        import subprocess
+        module, name = target.split(".")
+        code = "\n".join([
+            "import os, shutil, sys",
+            f"sys.path.insert(0, {str(Path(tidybatch.__file__).resolve().parent)!r})",
+            "import tidybatch",
+            f"owner, calls = {module}, []",
+            f"real = owner.{name}",
+            "def dying(*a, **k):",
+            "    calls.append(1)",
+            f"    if len(calls) == {at}:",
+            "        os._exit(9)",
+            "    return real(*a, **k)",
+            f"owner.{name} = dying",
+            f"tidybatch.main({list(argv)!r})",
+        ])
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 9, r.stdout + r.stderr)
+
+    def test_undo_after_a_crash_while_moving_to_temporary_names(self):
+        # Power cut in phase 1: one file is at its temporary name, the others never moved.
+        before = self.numbered()
+        self.crash("os.rename", 2, "rename", str(self.root), "-t", "{n}{ext}", "--start", "2", "--apply")
+        self.assertEqual(len(self.names()), 3)
+        self.assertEqual(run("undo", str(self.root)), 0)
+        self.assertEqual(self.contents(), before)
+
+    def test_undo_after_a_crash_while_moving_to_new_names(self):
+        # Power cut in phase 2 of a chain: "2" holds the old "1", the old "2" and "3" are at their
+        # temporary names, and the journal still lists every planned move.
+        before = self.numbered()
+        self.crash("shutil.move", 2, "rename", str(self.root), "-t", "{n}{ext}", "--start", "2", "--apply")
+        self.assertEqual((self.root / "2.txt").read_text(), "content-1")
+        self.assertEqual(run("undo", str(self.root)), 0)
+        self.assertEqual(self.contents(), before)
 
     def test_journal_is_written_before_any_file_moves(self):
         # Full disk: if the journal cannot be written, nothing may move (there would be no undo).
@@ -197,37 +267,28 @@ class TidyBatchTest(unittest.TestCase):
         self.assertEqual(self.names(), {"A.txt"})
         self.assertEqual(list((self.root / tidybatch.JOURNAL_DIR).iterdir()), [])
 
-    def test_failed_journal_update_keeps_the_real_error_and_undo_works(self):
-        # Interrupted run, then the disk fills up while the journal is trimmed to what moved:
-        # the interrupt must not be hidden, and the journal written before moving still allows undo.
+    def test_journal_that_cannot_be_removed_does_not_hide_the_interrupt(self):
+        # The run is rolled back, then the journal cannot be removed (a read-only folder, say): the
+        # interrupt still comes through with a warning, and undo finds nothing to change.
         import errno
         from unittest import mock
         for name in ("A.txt", "B.txt", "C.txt"):
             self.make(name, content=name)
-        real_move, real_write, calls = tidybatch.shutil.move, Path.write_text, []
+        real_unlink = Path.unlink
 
-        def interrupted(src, dst):
-            calls.append(dst)
-            if len(calls) == 2:
-                raise KeyboardInterrupt
-            return real_move(src, dst)
-
-        def full_after_interrupt(path, *args, **kwargs):
-            if len(calls) >= 2 and tidybatch.JOURNAL_DIR in path.parts:
-                raise OSError(errno.ENOSPC, "No space left on device")
-            return real_write(path, *args, **kwargs)
+        def locked(path, *args, **kwargs):
+            if tidybatch.JOURNAL_DIR in path.parts:
+                raise OSError(errno.EACCES, "Permission denied")
+            return real_unlink(path, *args, **kwargs)
 
         err = io.StringIO()
-        with mock.patch.object(tidybatch.shutil, "move", side_effect=interrupted), \
-                mock.patch.object(Path, "write_text", autospec=True, side_effect=full_after_interrupt), \
+        with self.interrupt_move(2), mock.patch.object(Path, "unlink", autospec=True, side_effect=locked), \
                 redirect_stdout(io.StringIO()), redirect_stderr(err):
             self.assertEqual(tidybatch.main(["rename", str(self.root), "-t", "{n}{ext}", "--apply"]), 130)
         self.assertIn("warning:", err.getvalue())
-        self.assertEqual(self.names(), {"1.txt", "B.txt", "C.txt"})
-        # The journal lists all three planned moves; the two that never happened are skipped.
-        self.assertEqual(run("undo", str(self.root)), 1)
-        self.assertEqual(self.names(), {"A.txt", "B.txt", "C.txt"})
-        self.assertEqual((self.root / "A.txt").read_text(), "A.txt")
+        self.assertEqual(self.contents(), {"A.txt": "A.txt", "B.txt": "B.txt", "C.txt": "C.txt"})
+        self.assertEqual(run("undo", str(self.root)), 0)
+        self.assertEqual(self.contents(), {"A.txt": "A.txt", "B.txt": "B.txt", "C.txt": "C.txt"})
 
     def forge_journal(self, payload) -> Path:
         import json
