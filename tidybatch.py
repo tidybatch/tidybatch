@@ -11,7 +11,7 @@ Safety model:
 
 Standard library only (Python 3.9+). MIT licensed.
 
-`organize` and `dedupe` are part of TidyBatch Pro: https://whop.com/tidybatch/bulk-file-renamer/
+`organize` and `dedupe` are part of TidyBatch Pro: https://whop.com/tidybatch/bulk-file-renamer/?utm_source=cli&utm_campaign=tidybatch
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
@@ -425,7 +425,10 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
     The journal is written even if something fails halfway.
     """
     journal_dir = root / JOURNAL_DIR
-    journal_dir.mkdir(exist_ok=True)
+    try:
+        journal_dir.mkdir(exist_ok=True)
+    except OSError as e:
+        raise TidyError(f"Cannot create the undo journal in '{journal_dir}' ({e.strerror or e}). Nothing was changed.")
     journal = journal_dir / f"journal-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
 
     staged: list[tuple[Move, Path]] = []
@@ -466,7 +469,26 @@ def _journal_path(p: Path) -> str:
     return str(p.parent.resolve() / p.name)
 
 
-def undo(root: Path, journal_path: Path | None) -> int:
+def _read_journal(journal_path: Path) -> list[tuple[Path, Path]]:
+    try:
+        data = json.loads(journal_path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise TidyError(f"Cannot read journal '{journal_path}' ({e.strerror or e}).")
+    except ValueError:  # bad JSON or bad UTF-8, e.g. a run killed while writing it
+        raise TidyError(f"Journal '{journal_path}' is damaged (not valid JSON). Nothing was changed.")
+    moves = data.get("moves") if isinstance(data, dict) else None
+    if not isinstance(moves, list) or not all(
+            isinstance(m, dict) and isinstance(m.get("src"), str) and isinstance(m.get("dst"), str) for m in moves):
+        raise TidyError(f"'{journal_path}' is not a TidyBatch journal (no valid list of moves). Nothing was changed.")
+    return [(Path(m["src"]), Path(m["dst"])) for m in moves]
+
+
+def _inside(p: Path, folders: list[Path]) -> bool:
+    p = p.resolve()
+    return any(p == f or f in p.parents for f in folders)
+
+
+def undo(root: Path, journal_path: Path | None, dest: Path | None = None) -> int:
     journal_dir = root / JOURNAL_DIR
     if journal_path is None:
         journals = sorted(journal_dir.glob("journal-*.json")) if journal_dir.is_dir() else []
@@ -474,11 +496,18 @@ def undo(root: Path, journal_path: Path | None) -> int:
             raise TidyError(f"No journal found in '{journal_dir}'. Nothing to undo.")
         journal_path = journals[-1]
 
-    data = json.loads(journal_path.read_text(encoding="utf-8"))
-    journal_root = Path(data["root"])
-    restored = skipped = 0
-    for entry in reversed(data["moves"]):
-        src, dst = Path(entry["src"]), Path(entry["dst"])
+    moves = _read_journal(journal_path)
+    # The journal is a plain file inside the folder, so anyone who hands you the folder can edit it.
+    # Only trust paths inside the folder you named (plus --dest, if you used one when applying).
+    folder = root.resolve()
+    allowed = [folder] + ([dest.expanduser().resolve()] if dest else [])
+    restored = skipped = outside = 0
+    for src, dst in reversed(moves):
+        if not (_inside(src, [folder]) and _inside(dst, allowed)):
+            print(f"  skip (outside '{root}'{' and --dest' if dest else ''}): {dst} -> {src}")
+            skipped += 1
+            outside += 1
+            continue
         if not dst.exists():
             print(f"  skip (missing now): {dst}")
             skipped += 1
@@ -495,11 +524,16 @@ def undo(root: Path, journal_path: Path | None) -> int:
             os.rename(dst, tmp)
             dst = tmp
         shutil.move(str(dst), str(src))
-        _remove_empty_parents(dst.parent, stop_at=journal_root)
+        _remove_empty_parents(dst.parent, stop_at=next(f for f in reversed(allowed) if _inside(dst.parent, [f])))
         restored += 1
 
-    journal_path.rename(journal_path.with_suffix(".undone"))
     print(f"Restored {restored} file(s), skipped {skipped}. Journal: {journal_path.name}")
+    if outside:
+        # Keep the journal so the run can be finished with the right --dest.
+        print(f"{outside} file(s) are outside this folder. If the run used --dest, "
+              f"repeat with: tidybatch undo \"{root}\" --journal \"{journal_path}\" --dest <that folder>")
+    else:
+        journal_path.rename(journal_path.with_suffix(".undone"))
     return 0 if skipped == 0 else 1
 
 
@@ -544,7 +578,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tidybatch",
         description="Bulk rename files safely. Dry run by default; every change can be undone.",
-        epilog="Need to sort folders or remove duplicates? TidyBatch Pro adds `organize` and `dedupe`: https://whop.com/tidybatch/bulk-file-renamer/",
+        # Raw, so argparse does not wrap the link at its hyphens and break it in the terminal.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Need to sort folders or remove duplicates? TidyBatch Pro adds `organize` and `dedupe`:\n"
+               "  https://whop.com/tidybatch/bulk-file-renamer/?utm_source=cli&utm_campaign=tidybatch",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -563,6 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     u = sub.add_parser("undo", help="revert the last applied run in a folder")
     u.add_argument("folder", type=Path)
+    u.add_argument("--dest", type=Path, help="the --dest folder of that run, if it was outside the folder")
     u.add_argument("--journal", type=Path, help="a specific journal file to revert")
 
     for name, what in (("organize", "sort files into folders"), ("dedupe", "move exact duplicates aside")):
@@ -580,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in ("organize", "dedupe"):
         # Non-zero so a script calling it never mistakes "not available" for success.
         print(f"`{args.command}` is part of TidyBatch Pro (one-time purchase, includes ready-to-run apps):\n"
-              f"  https://whop.com/tidybatch/bulk-file-renamer/\n"
+              f"  https://whop.com/tidybatch/bulk-file-renamer/?utm_source=cli&utm_campaign=tidybatch\n"
               "TidyBatch Core (this version) does `rename` and `undo`.", file=sys.stderr)
         return 2
     root: Path = args.folder.expanduser()
@@ -590,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "undo":
-            return undo(root, args.journal)
+            return undo(root, args.journal, args.dest)
 
         files = sort_files(iter_files(root, args.recursive, args.glob, args.hidden),
                            getattr(args, "sort", "name"))
@@ -604,9 +642,15 @@ def main(argv: list[str] | None = None) -> int:
             print("Dry run: nothing was changed. Add --apply to do it.")
             return 0
         journal = apply_moves(moves, root)
-        print(f"Done. To revert: tidybatch undo \"{root}\"   (journal: {journal.name})")
+        dest = getattr(args, "dest", None)
+        dest_arg = f" --dest \"{dest}\"" if dest else ""
+        print(f"Done. To revert: tidybatch undo \"{root}\"{dest_arg}   (journal: {journal.name})")
         return 0
     except TidyError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        # Permissions, full disk, a file locked by another program: say so, no traceback.
         print(f"error: {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

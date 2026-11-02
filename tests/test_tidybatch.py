@@ -180,6 +180,69 @@ class TidyBatchTest(unittest.TestCase):
         self.assertEqual(self.names(), {"A.txt", "B.txt", "C.txt"})
         self.assertEqual((self.root / "B.txt").read_text(), "B.txt")
 
+    def forge_journal(self, payload) -> Path:
+        import json
+        j = self.root / tidybatch.JOURNAL_DIR / "journal-forged.json"
+        j.parent.mkdir(exist_ok=True)
+        j.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+        return j
+
+    def test_undo_ignores_journal_paths_outside_the_folder(self):
+        # A folder from someone else can carry a forged journal: undo must not move files in or out of it.
+        with tempfile.TemporaryDirectory() as other:
+            secret = Path(other) / "secret.txt"
+            secret.write_text("mine")
+            inside = self.make("inside.txt", "in")
+            self.forge_journal({"root": other, "moves": [
+                {"src": str(self.root.resolve() / "stolen.txt"), "dst": str(secret)},
+                {"src": str(Path(other) / "out.txt"), "dst": str(inside)},
+            ]})
+            self.assertEqual(run("undo", str(self.root)), 1)
+            self.assertEqual(secret.read_text(), "mine")
+            self.assertEqual(self.names(), {"inside.txt"})
+            self.assertEqual({p.name for p in Path(other).iterdir()}, {"secret.txt"})
+
+    def test_damaged_journals_are_clean_errors(self):
+        self.make("a.txt")
+        for payload in ('{"root": ', "{}", '{"moves": "x"}', '{"moves": [{"src": 1, "dst": 2}]}', "[]", b"\xff"):
+            with self.subTest(payload=payload):
+                if isinstance(payload, bytes):
+                    j = self.forge_journal("")
+                    j.write_bytes(payload)
+                else:
+                    self.forge_journal(payload)
+                err = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                    self.assertEqual(tidybatch.main(["undo", str(self.root)]), 2)
+                self.assertIn("error:", err.getvalue())
+                self.assertEqual(self.names(), {"a.txt"})
+
+    def test_missing_journal_file_is_a_clean_error(self):
+        self.assertEqual(run("undo", str(self.root), "--journal", str(self.root / "nope.json")), 2)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "needs POSIX permissions")
+    def test_read_only_folder_is_a_clean_error(self):
+        self.make("A.txt")
+        os.chmod(self.root, 0o555)
+        try:
+            self.assertEqual(run("rename", str(self.root), "--lower", "--apply"), 2)
+            self.assertEqual(self.names(), {"A.txt"})
+        finally:
+            os.chmod(self.root, 0o755)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "needs POSIX permissions")
+    def test_undo_in_read_only_folder_can_be_retried(self):
+        self.make("sub/A.txt")
+        self.make("sub/B.txt")
+        self.assertEqual(run("rename", str(self.root), "-r", "--lower", "--apply"), 0)
+        os.chmod(self.root / "sub", 0o555)
+        try:
+            self.assertEqual(run("undo", str(self.root)), 2)
+        finally:
+            os.chmod(self.root / "sub", 0o755)
+        run("undo", str(self.root))
+        self.assertEqual(self.names(), {"sub/A.txt", "sub/B.txt"})
+
     def test_find_replace_with_groups(self):
         self.make("IMG_2024_0001.jpg")
         run("rename", str(self.root), "--find", r"IMG_(\d{4})_(\d+)", "--replace", r"\1-photo-\2", "--apply")
@@ -223,6 +286,17 @@ class TidyBatchTest(unittest.TestCase):
             self.assertIn("TidyBatch Pro", err.getvalue())
             self.assertEqual(out.getvalue(), "")
         self.assertEqual(self.names(), {"a b.txt"})
+
+    def test_pro_links_carry_utm(self):
+        # Every Whop link the CLI shows must be tagged, so sales from the CLI can be counted.
+        tag = "?utm_source=cli&utm_campaign=tidybatch"
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            tidybatch.main(["organize", str(self.root)])
+        self.assertIn(f"/bulk-file-renamer/{tag}", err.getvalue())
+        # In --help the whole link must sit on one line, or the terminal cannot open it.
+        self.assertIn(f"https://whop.com/tidybatch/bulk-file-renamer/{tag}\n", tidybatch.build_parser().format_help())
+        self.assertIn(f"/bulk-file-renamer/{tag}", tidybatch.__doc__)
 
     def test_bad_template_is_a_clean_error(self):
         self.make("a.txt")
