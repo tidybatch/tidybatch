@@ -312,6 +312,41 @@ class TidyBatchTest(unittest.TestCase):
             self.assertEqual(self.names(), {"inside.txt"})
             self.assertEqual({p.name for p in Path(other).iterdir()}, {"secret.txt"})
 
+    def test_undo_ignores_forged_temporary_names(self):
+        # A forged "tmp" must not pull in a file from outside, rename a file without the
+        # temporary prefix, or follow a symlink out of the folder.
+        import json
+        for state in ("planned", "staged"):
+            for case in ("outside", "no prefix", "symlink out"):
+                with self.subTest(state=state, case=case), tempfile.TemporaryDirectory() as folder, \
+                        tempfile.TemporaryDirectory() as other:
+                    folder, other = Path(folder).resolve(), Path(other).resolve()
+                    secret = other / "secret.txt"
+                    secret.write_text("mine")
+                    if case == "outside":
+                        tmp = other / (tidybatch.TMP_PREFIX + "x")
+                        tmp.write_text("mine")
+                    elif case == "no prefix":
+                        tmp = folder / "precious.txt"
+                        tmp.write_text("mine")
+                    else:
+                        tmp = folder / (tidybatch.TMP_PREFIX + "x")
+                        try:
+                            tmp.symlink_to(secret)
+                        except OSError:
+                            self.skipTest("cannot create symlinks here")
+                    journal = folder / tidybatch.JOURNAL_DIR / "journal-forged.json"
+                    journal.parent.mkdir()
+                    journal.write_text(json.dumps({"root": str(folder), "state": state, "moves": [
+                        {"src": str(folder / "a.txt"), "dst": str(folder / "b.txt"), "tmp": str(tmp)}]}))
+                    run("undo", str(folder))
+                    self.assertEqual(tmp.read_text(), "mine")
+                    self.assertEqual(tmp.is_symlink(), case == "symlink out")
+                    self.assertEqual(secret.read_text(), "mine")
+                    self.assertFalse((folder / "a.txt").exists())
+                    self.assertEqual(sorted(p.name for p in other.iterdir()),
+                                     sorted({"secret.txt", tmp.name if case == "outside" else "secret.txt"}))
+
     def test_damaged_journals_are_clean_errors(self):
         self.make("a.txt")
         for payload in ('{"root": ', "{}", '{"moves": "x"}', '{"moves": [{"src": 1, "dst": 2}]}', "[]", b"\xff"):
