@@ -75,15 +75,22 @@ tidybatch undo ~/Downloads
 
 Most of the code was written with an AI coding agent. The behaviour that protects your files (two-phase moves, collision checks, undo) is pinned down by the test suite, which runs on Linux, macOS and Windows on every push.
 
-## TidyBatch Pro
+## Free (this repo) vs Pro
 
-This repository is **TidyBatch Core** (rename + undo), free and MIT-licensed. **[TidyBatch Pro](https://whop.com/tidybatch/bulk-file-renamer/?utm_source=github&utm_campaign=tidybatch)** adds:
+This repository is **TidyBatch Core**, free and MIT-licensed. **[TidyBatch Pro](https://whop.com/tidybatch/bulk-file-renamer/?utm_source=github&utm_campaign=tidybatch)** is a one-time purchase (9 €).
 
-- `organize`: sort a folder into Images / Documents / Videos…, by year/month (modified **or photo date taken**), or by extension
-- `dedupe`: find exact duplicates by content (SHA-256), keep the oldest, move the rest aside (never deleted)
-- ready-to-run apps for **Windows and Linux** (no Python needed), plus free 1.x updates
+| | Core (free, MIT) | Pro (9 €, one-time) |
+|---|:---:|:---:|
+| `rename`: templates (`{n:03}`, `{taken:%Y-%m-%d}`), regex find/replace, `--slug`, `--lower` | ✅ | ✅ |
+| Dry run by default, nothing changes without `--apply` | ✅ | ✅ |
+| `undo` (journal kept in the folder) | ✅ | ✅ |
+| `organize`: sort files into folders by type, modified date, photo date taken, or extension | – | ✅ |
+| `dedupe`: find exact duplicates by content (SHA-256), keep the oldest, move the rest to `_duplicates/` (never deleted) | – | ✅ |
+| Ready-to-run apps for Windows and Linux (no Python needed) | – (run `tidybatch.py` with Python 3.9+) | ✅ |
+| macOS | `python3 tidybatch.py` | `python3 tidybatch.py` (no macOS app) |
 
-Buying Pro also funds the free version. Thank you!
+Both are command-line tools with no graphical interface, and both run offline.
+If rename + undo is all you need, you don't need Pro. Buying it funds the free version. Thank you!
 
 ## Contributing
 
