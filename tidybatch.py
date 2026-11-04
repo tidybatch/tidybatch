@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
