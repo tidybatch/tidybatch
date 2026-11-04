@@ -215,6 +215,33 @@ class TidyBatchTest(unittest.TestCase):
         self.assertEqual(run("undo", str(self.root)), 0)
         self.assertEqual(self.contents(), {"Big.TXT": "0123456789"})
 
+    def test_file_that_appears_at_the_new_name_during_the_move_is_kept(self):
+        # Another program creates the new name between the check and the move, and the move stops
+        # before writing anything. A bigger file or a symlink there is not our unfinished copy.
+        from unittest import mock
+        for case in ("bigger", "symlink"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as folder, \
+                    tempfile.TemporaryDirectory() as other:
+                folder, secret = Path(folder), Path(other) / "secret.txt"
+                secret.write_text("theirs")
+                (folder / "Big.TXT").write_text("0123")
+
+                def appears(src, dst):
+                    if case == "bigger":
+                        Path(dst).write_text("someone else's file")
+                    else:
+                        os.symlink(secret, dst)
+                    raise KeyboardInterrupt
+
+                with mock.patch.object(tidybatch.shutil, "move", side_effect=appears):
+                    self.assertEqual(run("rename", str(folder), "--lower", "--apply"), 130)
+                self.assertEqual((folder / "Big.TXT").read_text(), "0123")
+                if case == "bigger":
+                    self.assertEqual((folder / "big.txt").read_text(), "someone else's file")
+                else:
+                    self.assertTrue((folder / "big.txt").is_symlink())
+                self.assertEqual(secret.read_text(), "theirs")
+
     def test_interrupted_numbering_chain_loses_nothing(self):
         # 1->2, 2->3, 3->4 stopped after the first move: "2" already holds the old "1" when the old
         # "2" has to go back. Up to 1.1.3 putting it back overwrote the old "1".
