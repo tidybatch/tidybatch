@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__version__ = "1.1.5"
+__version__ = "1.1.6"
 
 JOURNAL_DIR = ".tidybatch"
 TMP_PREFIX = ".tidybatch-tmp-"
@@ -475,11 +475,14 @@ def _drop_partial_copy(original: Path, copy: Path) -> None:
 
     Between disks shutil.move copies and then deletes the original, so a stop halfway leaves part
     of the file at the new name. The new name was free just before the move, so while the original
-    still exists anything there is that unfinished copy.
+    still exists anything there is that unfinished copy. A symlink, or a file bigger than the
+    original, cannot be that copy (another program put it there), so it stays.
     """
     if not (original.exists() and copy.exists()) or _key(original) == _key(copy):
         return
     try:
+        if copy.is_symlink() or not copy.is_file() or copy.stat().st_size > original.stat().st_size:
+            return
         copy.unlink()
     except OSError as e:
         print(f"warning: could not delete the unfinished copy '{copy}' ({e.strerror or e}). "
