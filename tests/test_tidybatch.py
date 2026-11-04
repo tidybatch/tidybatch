@@ -158,14 +158,21 @@ class TidyBatchTest(unittest.TestCase):
         moves = tidybatch.resolve_collisions([tidybatch.Move(a, a.with_name("photo.jpg"))])
         self.assertEqual([m.dst.name for m in moves], ["photo.jpg"])
 
-    def interrupt_move(self, at: int):
-        """Patch shutil.move so the run is interrupted (Ctrl+C) on its `at`-th move."""
+    def interrupt_move(self, at: int, partial: bool = False):
+        """Patch shutil.move so the run is interrupted (Ctrl+C) on its `at`-th move.
+
+        With `partial`, the interrupted move first writes half of the file at the destination, as a
+        copy to another disk does when it is stopped halfway.
+        """
         from unittest import mock
         real_move, calls = tidybatch.shutil.move, []
 
         def interrupted(src, dst):
             calls.append(dst)
             if len(calls) == at:
+                if partial:
+                    data = Path(src).read_bytes()
+                    Path(dst).write_bytes(data[:len(data) // 2])
                 raise KeyboardInterrupt
             return real_move(src, dst)
 
@@ -188,6 +195,25 @@ class TidyBatchTest(unittest.TestCase):
             self.assertEqual(run("rename", str(self.root), "--lower", "--apply"), 130)
         self.assertEqual(self.contents(), {"A.txt": "A.txt", "B.txt": "B.txt", "C.txt": "C.txt"})
         self.assertEqual(list((self.root / tidybatch.JOURNAL_DIR).iterdir()), [])
+
+    def test_interrupted_copy_to_another_disk_leaves_no_partial_file(self):
+        # Between disks shutil.move copies and then deletes: Ctrl+C halfway through the copy left
+        # half a file under the new name, next to the original put back.
+        self.make("Big.TXT", content="0123456789")
+        with self.interrupt_move(1, partial=True):
+            self.assertEqual(run("rename", str(self.root), "--lower", "--apply"), 130)
+        self.assertEqual(self.contents(), {"Big.TXT": "0123456789"})
+
+    def test_undo_interrupted_halfway_through_a_copy_can_be_retried(self):
+        # The same in undo: half a file under the original name made a second undo stop with
+        # "original name taken".
+        self.make("Big.TXT", content="0123456789")
+        run("rename", str(self.root), "--lower", "--apply")
+        with self.interrupt_move(1, partial=True):
+            self.assertEqual(run("undo", str(self.root)), 130)
+        self.assertEqual(self.contents(), {"big.txt": "0123456789"})
+        self.assertEqual(run("undo", str(self.root)), 0)
+        self.assertEqual(self.contents(), {"Big.TXT": "0123456789"})
 
     def test_interrupted_numbering_chain_loses_nothing(self):
         # 1->2, 2->3, 3->4 stopped after the first move: "2" already holds the old "1" when the old
