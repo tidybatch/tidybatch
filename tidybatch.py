@@ -441,6 +441,7 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
         raise TidyError(f"Cannot write the undo journal '{journal}' ({e.strerror or e}). Nothing was changed.")
 
     staged = done = 0  # moves[:staged] are at their temporary name or later, moves[:done] at their new name
+    copying: tuple[Path, Path] | None = None  # (file, new name) while shutil.move runs
     try:
         for m, tmp in zip(moves, tmps):
             os.rename(m.src, tmp)
@@ -453,9 +454,13 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
             if m.dst.exists():
                 raise TidyError(f"Refusing to overwrite '{m.dst}' (it appeared during the run). Nothing was changed.")
             m.dst.parent.mkdir(parents=True, exist_ok=True)
+            copying = (tmp, m.dst)
             shutil.move(str(tmp), str(m.dst))
             done += 1
+            copying = None
     except BaseException:
+        if copying:
+            _drop_partial_copy(*copying)
         _roll_back(moves[:staged], tmps[:staged], done, journal, root)
         raise
     try:
@@ -463,6 +468,22 @@ def apply_moves(moves: list[Move], root: Path) -> Path:
     except OSError:
         pass  # the "staged" journal already tells undo that every file is at its new name
     return journal
+
+
+def _drop_partial_copy(original: Path, copy: Path) -> None:
+    """Delete what an interrupted shutil.move left at `copy`, if `original` is still whole.
+
+    Between disks shutil.move copies and then deletes the original, so a stop halfway leaves part
+    of the file at the new name. The new name was free just before the move, so while the original
+    still exists anything there is that unfinished copy.
+    """
+    if not (original.exists() and copy.exists()) or _key(original) == _key(copy):
+        return
+    try:
+        copy.unlink()
+    except OSError as e:
+        print(f"warning: could not delete the unfinished copy '{copy}' ({e.strerror or e}). "
+              f"The file itself is safe; delete that copy by hand.", file=sys.stderr)
 
 
 def _roll_back(moves: list[Move], tmps: list[Path], done: int, journal: Path, root: Path) -> None:
@@ -624,6 +645,7 @@ def _restore(todo: list[tuple[Path, Path]]) -> int:
     tmps = [now.with_name(f"{TMP_PREFIX}{os.getpid()}-undo-{i}{now.suffix}") for i, (_, now) in enumerate(todo)]
     staged = 0
     back: list[int] = []
+    copying: tuple[Path, Path] | None = None  # (file, original name) while shutil.move runs
     try:
         for (_, now), tmp in zip(todo, tmps):
             os.rename(now, tmp)
@@ -634,9 +656,13 @@ def _restore(todo: list[tuple[Path, Path]]) -> int:
                 os.rename(tmp, now)
                 continue
             src.parent.mkdir(parents=True, exist_ok=True)
+            copying = (tmp, src)
             shutil.move(str(tmp), str(src))
             back.append(i)
+            copying = None
     except BaseException:
+        if copying:
+            _drop_partial_copy(*copying)
         for i in reversed(back):
             shutil.move(str(todo[i][0]), str(tmps[i]))
         for (_, now), tmp in zip(todo[:staged], tmps[:staged]):
