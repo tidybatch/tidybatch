@@ -218,13 +218,14 @@ class TidyBatchTest(unittest.TestCase):
     def test_file_that_appears_at_the_new_name_during_the_move_is_kept(self):
         # Another program creates the new name between the check and the move, and the move stops
         # before writing anything. A bigger file or a symlink there is not our unfinished copy.
+        # The new name differs by more than case, so it is a different file on Windows and macOS too.
         from unittest import mock
         for case in ("bigger", "symlink"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as folder, \
                     tempfile.TemporaryDirectory() as other:
                 folder, secret = Path(folder), Path(other) / "secret.txt"
                 secret.write_text("theirs")
-                (folder / "Big.TXT").write_text("0123")
+                (folder / "Big File.TXT").write_text("0123")
 
                 def appears(src, dst):
                     if case == "bigger":
@@ -234,12 +235,12 @@ class TidyBatchTest(unittest.TestCase):
                     raise KeyboardInterrupt
 
                 with mock.patch.object(tidybatch.shutil, "move", side_effect=appears):
-                    self.assertEqual(run("rename", str(folder), "--lower", "--apply"), 130)
-                self.assertEqual((folder / "Big.TXT").read_text(), "0123")
+                    self.assertEqual(run("rename", str(folder), "--slug", "--lower", "--apply"), 130)
+                self.assertEqual((folder / "Big File.TXT").read_text(), "0123")
                 if case == "bigger":
-                    self.assertEqual((folder / "big.txt").read_text(), "someone else's file")
+                    self.assertEqual((folder / "big_file.txt").read_text(), "someone else's file")
                 else:
-                    self.assertTrue((folder / "big.txt").is_symlink())
+                    self.assertTrue((folder / "big_file.txt").is_symlink())
                 self.assertEqual(secret.read_text(), "theirs")
 
     def test_interrupted_numbering_chain_loses_nothing(self):
