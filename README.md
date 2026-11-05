@@ -9,6 +9,7 @@
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
+[![As seen on Open Source Alternatives](https://www.opensourcealternatives.to/badge-osa.svg)](https://www.opensourcealternatives.to)
 
 Most bulk-rename scripts have a silent bug: renumber `1.txt 2.txt 3.txt` → `2.txt 3.txt 4.txt` and the first `mv` overwrites the original `2.txt`. TidyBatch is built around not doing that:
 
