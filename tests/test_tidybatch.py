@@ -501,6 +501,18 @@ class TidyBatchTest(unittest.TestCase):
         self.make("a.txt")
         self.assertEqual(run("rename", str(self.root), "-t", "{nope}"), 2)
 
+    def test_bad_template_field_access_is_a_clean_error(self):
+        # Attribute/subscript lookups ({n.foo}, {n[0]}) must be clean exit-2
+        # errors like {nope}, not tracebacks.
+        self.make("a.txt")
+        for template in ("{n.foo}", "{n[0]}", "{stem.bar}"):
+            with self.subTest(template=template):
+                err = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                    self.assertEqual(tidybatch.main(["rename", str(self.root), "-t", template]), 2)
+                self.assertIn("error:", err.getvalue())
+                self.assertEqual(self.names(), {"a.txt"})
+
     def test_template_cannot_create_paths(self):
         self.make("a.txt")
         self.assertEqual(run("rename", str(self.root), "-t", "../{stem}{ext}", "--apply"), 2)

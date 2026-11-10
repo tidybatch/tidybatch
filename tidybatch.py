@@ -351,7 +351,7 @@ def render_name(template: str, path: Path, index: int, stem: str | None = None) 
         name = template.format(**fields)
     except KeyError as e:
         raise TidyError(f"Unknown template field {e}. Available: {', '.join('{' + k + '}' for k in fields)}")
-    except (ValueError, IndexError) as e:
+    except (ValueError, IndexError, AttributeError, TypeError) as e:
         raise TidyError(f"Invalid template '{template}': {e}")
     if "/" in name or "\\" in name:
         raise TidyError("Template must produce a file name, not a path (no '/' or '\\').")
